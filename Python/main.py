@@ -2,11 +2,11 @@ from ultralytics import YOLO
 import os
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-test_image_path = os.path.join(current_dir, "test.jpg")
-test2_image_path = os.path.join(current_dir, "test2.jpg")
+# Zaktualizowano ścieżki, aby wskazywały na folder 'images'
+test_image_path = os.path.join(current_dir, "images", "test.jpg")
+test2_image_path = os.path.join(current_dir, "images", "test2.jpg")
 
-
-model = YOLO("yolov8n.pt")
+model = YOLO("yolov8x.pt")
 
 # Funkcja do analizy obrazu i wyświetlania tylko wykrytych ludzi i psów
 def analyze_image(image_path):
