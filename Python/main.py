@@ -2,17 +2,12 @@ from ultralytics import YOLO
 import os
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# Zaktualizowano ścieżki, aby wskazywały na folder 'images'
 test_image_path = os.path.join(current_dir, "images", "test.jpg")
 test2_image_path = os.path.join(current_dir, "images", "test2.jpg")
 
 model = YOLO("yolov8x.pt")
 
-# Funkcja do analizy obrazu i wyświetlania tylko wykrytych ludzi i psów
 def analyze_image(image_path):
-    # Wykrywanie obiektów, ale filtrowanie tylko klas "osoba" (0) i "pies" (16)
-    # classes=[0, 16] spowoduje, że model wykryje tylko ludzi i psy
-    # save=False - nie zapisuj obrazów z adnotacjami
     results = model.predict(image_path, save=False, classes=[0, 16])
     
     people_count = 0
