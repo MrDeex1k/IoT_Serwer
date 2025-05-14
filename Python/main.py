@@ -5,7 +5,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 test_image_path = os.path.join(current_dir, "images", "test.jpg")
 test2_image_path = os.path.join(current_dir, "images", "test2.jpg")
 
-model = YOLO("yolov8x.pt")
+model = YOLO("yolo12s.pt")
 
 def analyze_image(image_path):
     results = model.predict(image_path, save=False, classes=[0, 16])
