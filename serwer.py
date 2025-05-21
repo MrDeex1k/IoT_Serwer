@@ -1,16 +1,22 @@
 from flask import Flask, render_template, send_from_directory, url_for, request, jsonify
-import os
-import glob
-import platform
-import time
-import threading
-import cv2  # Dodano import cv2
-import traceback  # Dodano import traceback
+import os # Dodano import os
+import cv2 # Dodano import cv2
+import traceback # Dodano import traceback
+import glob # Dodano import glob
+import platform # Dodano import platform
+import time # Dodano import time
+import threading # Dodano import threading
+from ultralytics import YOLO # Dodano import YOLO
 
 app = Flask(__name__, template_folder='template', static_folder='template')
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 CAMERA_FOLDER = os.path.join(current_dir, "kamera")
+MODEL_PATH = os.path.join(current_dir, "yolo12s.pt") # Ścieżka do modelu YOLO
+
+# Załaduj model YOLO
+model = YOLO(MODEL_PATH)
+print(f"Model YOLO załadowany z: {MODEL_PATH}")
 
 camera_port = None
 global_cap = None # Globalny obiekt kamery
@@ -40,8 +46,9 @@ def get_next_photo_filename():
             if num > max_num:
                 max_num = num
         except ValueError:
-            print(f"Ostrzeżenie: Nie udało się przetworzyć numeru dla pliku {photo_path}")
-            continue # Pomiń ten plik
+            # Ignoruj pliki, które nie pasują do wzorca photoX.jpg
+            print(f"Pominięto plik o nieprawidłowej nazwie: {photo_path}")
+            pass # Dodano pass
     
     next_num = max_num + 1
     return os.path.join(CAMERA_FOLDER, f"photo{next_num}.jpg")
@@ -53,15 +60,15 @@ def scan_usb_for_camera():
     
     if system == "Windows":
         print("Skanowanie kamer (Windows)...")
-        for i in range(10):  # Sprawdź pierwsze 10 portów
+        for i in range(10): # Sprawdź pierwsze 10 portów
             cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
             if cap.isOpened():
-                print(f"Znaleziono kamerę na porcie {i} (Windows).")
+                print(f"Znaleziono kamerę na porcie {i}")
                 found_cameras.append(i)
-                cap.release()
+                cap.release() # Ważne: zwolnij kamerę po sprawdzeniu
+            # Dodano else i cap.release() w przypadku niepowodzenia
             else:
-                # Niektóre wersje OpenCV mogą wymagać zwolnienia nawet jeśli isOpened() jest false
-                cap.release() 
+                cap.release()
     elif system == "Linux":
         print("Skanowanie kamer (Linux)...")
         devices = glob.glob('/dev/video*')
@@ -70,18 +77,17 @@ def scan_usb_for_camera():
                 port_num = int(device_path.replace('/dev/video', ''))
                 cap = cv2.VideoCapture(port_num)
                 if cap.isOpened():
-                    print(f"Znaleziono kamerę na {device_path} (port {port_num}).")
+                    print(f"Znaleziono kamerę na urządzeniu {device_path} (port {port_num})")
                     found_cameras.append(port_num)
                     cap.release()
-                else:
+                else: # Dodano else i cap.release()
                     cap.release()
             except ValueError:
-                print(f"Nie można przetworzyć {device_path} na numer portu.")
-                continue
-            except Exception as e_linux_cam:
-                print(f"Błąd podczas sprawdzania kamery {device_path}: {e_linux_cam}")
-                if 'cap' in locals() and cap: # type: ignore
-                    cap.release() # type: ignore
+                print(f"Nie można przetworzyć {device_path} jako portu kamery.")
+            except Exception as e: # Dodano obsługę wyjątków
+                print(f"Błąd podczas sprawdzania kamery {device_path}: {e}")
+                if 'cap' in locals() and cap.isOpened():
+                    cap.release()
     
     if found_cameras:
         print(f"Lista znalezionych działających kamer: {found_cameras}")
@@ -91,36 +97,98 @@ def scan_usb_for_camera():
         return None
 
 def get_latest_photo_details():
-    """Zwraca nazwę pliku i czas modyfikacji najnowszego zdjęcia, lub (None, None)."""
+    """Zwraca nazwę pliku i czas modyfikacji najnowszego zdjęcia, oraz pełną ścieżkę lub (None, None, None)."""
     if not os.path.exists(CAMERA_FOLDER):
-        return None, None
+        return None, None, None # Zmieniono zwracaną wartość
     
     photo_files = glob.glob(os.path.join(CAMERA_FOLDER, "photo*.jpg"))
     if not photo_files:
-        return None, None
+        return None, None, None # Zmieniono zwracaną wartość
         
-    latest_photo = max(photo_files, key=os.path.getmtime)
-    modification_time = os.path.getmtime(latest_photo)
-    return os.path.basename(latest_photo), modification_time
+    latest_photo_path = max(photo_files, key=os.path.getmtime) # Zmieniono nazwę zmiennej
+    modification_time = os.path.getmtime(latest_photo_path)
+    return os.path.basename(latest_photo_path), modification_time, latest_photo_path # Dodano pełną ścieżkę
+
+def analyze_image_for_web(image_path):
+    """Analizuje obraz za pomocą YOLO i zwraca opis wykrytych obiektów."""
+    if not image_path or not os.path.exists(image_path):
+        return "Brak obrazu do analizy."
+
+    try:
+        results = model.predict(image_path, save=False, classes=[0, 16], verbose=False) # verbose=False dla czystszego logu
+        people_count = 0
+        dogs_count = 0
+        detection_details = []
+
+        for result in results:
+            boxes = result.boxes
+            for box in boxes: # Usunięto enumerate, jeśli nie jest potrzebny indeks
+                cls_id = int(box.cls[0])
+                confidence = float(box.conf[0])
+                
+                if cls_id == 0:  # Osoba
+                    people_count += 1
+                    detection_details.append(f"Człowiek ({confidence*100:.0f}%)")
+                elif cls_id == 16:  # Pies
+                    dogs_count += 1
+                    detection_details.append(f"Pies ({confidence*100:.0f}%)")
+        
+        if people_count == 0 and dogs_count == 0:
+            return "Nie wykryto ludzi ani psów."
+        else:
+            summary = []
+            if people_count > 0:
+                summary.append(f"Ludzie: {people_count}")
+            if dogs_count > 0:
+                summary.append(f"Psy: {dogs_count}")
+            return f"Wykryto: {', '.join(summary)}. Szczegóły: {'; '.join(detection_details)}"
+
+    except Exception as e:
+        print(f"Błąd podczas analizy obrazu {image_path}: {e}")
+        traceback.print_exc()
+        return "Błąd analizy obrazu."
 
 @app.route('/')
 def home():
     try:
-        image_filename, _ = get_latest_photo_details()
+        image_filename, _, image_path = get_latest_photo_details() # Pobierz pełną ścieżkę
         image_exists = image_filename is not None
-        return render_template('index.html', image_exists=image_exists, image_filename=image_filename)
+        detection_info = None
+        if image_exists and image_path:
+            detection_info = analyze_image_for_web(image_path)
+
+        # Informacje o stanie kamery do przekazania do szablonu
+        with global_capture_active_lock:
+            camera_active_status = capture_active
+            remaining_time_status = 0
+            if global_capture_end_time and camera_active_status:
+                remaining_time_status = max(0, int(global_capture_end_time - time.time()))
+
+        return render_template('index.html', 
+                               image_exists=image_exists, 
+                               image_filename=image_filename,
+                               detection_info=detection_info,
+                               camera_active=camera_active_status,
+                               remaining_time=remaining_time_status)
     except Exception as e:
         print(f"Błąd w home: {e}")
         traceback.print_exc()
-        return render_template('index.html', image_exists=False, image_filename=None, error_message="Błąd ładowania strony głównej.")
+        # Podstawowy render w razie błędu, aby strona się załadowała
+        return render_template('index.html', 
+                               image_exists=False, 
+                               image_filename=None,
+                               detection_info="Błąd ładowania informacji.",
+                               camera_active=False,
+                               remaining_time=0)
 
 @app.route('/kamera/<path:filename>')
 def get_camera_image(filename):
     try:
-        return send_from_directory(CAMERA_FOLDER, filename)
+        return send_from_directory(CAMERA_FOLDER, filename, as_attachment=False) # as_attachment=False
     except Exception as e:
         print(f"Błąd przy serwowaniu obrazu {filename}: {e}")
-        return "Błąd serwowania obrazu", 404
+        traceback.print_exc()
+        return "Błąd serwowania obrazu", 404 # Dodano kod błędu
 
 @app.route('/style.css')
 def css():
@@ -135,80 +203,58 @@ def scan_camera():
     
     if found_port is not None:
         camera_port = found_port # Ustaw globalny port kamery
-        return jsonify({'status': 'success', 'message': f'Znaleziono kamerę na porcie {camera_port}.', 'camera_port': camera_port})
+        return jsonify({'status': 'success', 'message': f'Znaleziono i ustawiono kamerę na porcie {camera_port}.', 'camera_port': camera_port})
     else:
-        return jsonify({'status': 'error', 'message': 'Nie znaleziono żadnej działającej kamery.'}), 404
+        camera_port = None # Resetuj port, jeśli nie znaleziono
+        return jsonify({'status': 'error', 'message': 'Nie znaleziono żadnej działającej kamery.'}), 404 # Dodano kod błędu
 
 @app.route('/get-latest-image-info', methods=['GET'])
 def get_latest_image_info():
-    try:
-        image_filename, modification_time = get_latest_photo_details()
-        is_camera_active_locally = False
-        remaining_time_locally = 0
+    image_filename, _, image_path = get_latest_photo_details() # Pobierz pełną ścieżkę
+    detection_info = "Analiza nie przeprowadzona." # Domyślna wartość
 
-        with global_capture_active_lock:
-            if capture_active: # capture_active jest główną flagą intencji przechwytywania
-                is_camera_active_locally = True
-                if global_capture_end_time is not None:
-                    current_time = time.time()
-                    if current_time < global_capture_end_time:
-                        remaining_time_locally = int(global_capture_end_time - current_time)
-                    else:
-                        # Czas minął, ale capture_active może jeszcze nie być wyczyszczone
-                        # (np. wątek zakończył się naturalnie, a nie przez komendę OFF)
-                        remaining_time_locally = 0 
-            else:
-                is_camera_active_locally = False
-                remaining_time_locally = 0
-                # Jeśli capture_active jest False, global_capture_end_time też powinien być None
-                # global global_capture_end_time # Nie można przypisać w tym zasięgu bez deklaracji globalnej w funkcji
-                # To jest obsługiwane w turn_camera_on
+    if image_filename and image_path:
+        image_url = url_for('get_camera_image', filename=image_filename, _external=True)
+        detection_info = analyze_image_for_web(image_path)
+        status_message = 'success'
+    elif image_filename: # Jest nazwa, ale nie ma ścieżki - mało prawdopodobne po zmianach
+        image_url = url_for('get_camera_image', filename=image_filename, _external=True)
+        detection_info = "Brak ścieżki do analizy obrazu."
+        status_message = 'success_no_analysis'
+    else:
+        image_url = None
+        detection_info = "Brak zdjęć."
+        status_message = 'info' # Zmieniono na 'info' dla braku zdjęć
 
-        response_data = {
-            'camera_active': is_camera_active_locally,
-            'remaining_time': remaining_time_locally if is_camera_active_locally else 0
-        }
+    with global_capture_active_lock:
+        camera_active_status = capture_active
+        remaining_time_status = 0
+        if global_capture_end_time and camera_active_status:
+            remaining_time_status = max(0, int(global_capture_end_time - time.time()))
 
-        if image_filename:
-            image_url = url_for('get_camera_image', filename=image_filename, _external=False)
-            image_url_with_timestamp = f"{image_url}?v={modification_time}"
-            response_data.update({
-                'status': 'success',
-                'image_filename': image_filename,
-                'image_url': image_url_with_timestamp,
-                'message': 'Najnowszy obraz dostępny.'
-            })
-        else:
-            response_data.update({
-                'status': 'info',
-                'message': 'Brak zdjęć.'
-            })
-        return jsonify(response_data)
-    except Exception as e:
-        print(f"Błąd w get_latest_image_info: {e}")
-        traceback.print_exc()
-        return jsonify({
-            'status': 'error', 
-            'message': 'Błąd serwera przy pobieraniu informacji o obrazie.',
-            'camera_active': False,
-            'remaining_time': 0
-            }), 500
+    return jsonify({
+        'status': status_message, 
+        'image_url': image_url, 
+        'image_filename': image_filename,
+        'detection_info': detection_info,
+        'camera_active': camera_active_status,
+        'remaining_time': remaining_time_status,
+        'message': "Brak zdjęć." if status_message == 'info' else "" # Dodano pole message dla spójności
+    })
 
 def capture_image_from_camera_instance(cap_instance, output_path):
     """Wykonuje zdjęcie z już otwartej instancji kamery."""
     try:
-        if not cap_instance or not cap_instance.isOpened():
-            print("Błąd: Instancja kamery nie jest otwarta.")
-            return False
         ret, frame = cap_instance.read()
-        if not ret:
-            print("Nie udało się odczytać ramki z kamery.")
+        if ret:
+            cv2.imwrite(output_path, frame)
+            print(f"Zdjęcie zapisane jako {output_path}")
+            return True
+        else:
+            print("Nie udało się przechwycić obrazu z otwartej kamery.")
             return False
-        cv2.imwrite(output_path, frame)
-        # print(f"Zdjęcie zapisane do {output_path}") # Można odkomentować dla bardziej szczegółowego logowania
-        return True
     except Exception as e:
-        print(f"Wyjątek podczas robienia zdjęcia (instancja): {e}")
+        print(f"Błąd podczas przechwytywania obrazu z instancji kamery: {e}")
         traceback.print_exc()
         return False
 
@@ -264,157 +310,133 @@ def photo_capture_loop(cap_instance, duration_seconds, interval_seconds):
 
 @app.route('/TurnCameraON', methods=['POST'])
 def turn_camera_on():
-    global capture_active, capture_thread, camera_port, global_capture_active_lock, global_cap
-    global global_capture_end_time # Dodano
+    global camera_port, global_cap, capture_active, capture_thread, global_capture_end_time, global_capture_active_lock
     data = request.get_json()
-    status_command = data.get('Status')
-    duration_str = data.get('Time', '30')
+    status = data.get('Status')
+    
+    with global_capture_active_lock: # Zabezpieczenie dostępu do zmiennych globalnych
+        if status == 'ON':
+            if not camera_port: # Sprawdzenie czy port kamery jest znany
+                # Próba automatycznego skanowania, jeśli port nie jest ustawiony
+                print("Port kamery nieustawiony. Próba skanowania...")
+                found_port = scan_usb_for_camera()
+                if found_port is not None:
+                    camera_port = found_port
+                    print(f"Automatycznie znaleziono i ustawiono kamerę na porcie {camera_port}.")
+                else:
+                    print("Nie udało się automatycznie znaleźć kamery. Nie można włączyć.")
+                    return jsonify({'status': 'error', 'message': 'Nie można włączyć kamery, port nieznany i nie udało się go znaleźć.'}), 500
 
-    try:
-        duration_seconds = int(duration_str)
-    except ValueError:
-        return jsonify({'status': 'error', 'message': 'Nieprawidłowy format czasu.'}), 400
+            if capture_active:
+                print("Próba włączenia kamery, gdy jest już aktywna. Najpierw wyłącz.")
+                # Można by zwrócić błąd lub zignorować, tutaj zwracamy informację
+                return jsonify({'status': 'info', 'message': 'Kamera jest już włączona.'})
 
-    try:
-        interval_seconds = 3 
-
-        with global_capture_active_lock:
-            if status_command == 'ON':
-                if capture_active:
-                    # Jeśli już aktywna, zaktualizuj czas zakończenia, jeśli nowe żądanie ma dłuższy czas
-                    new_end_time = time.time() + duration_seconds
-                    if global_capture_end_time is None or new_end_time > global_capture_end_time:
-                        global_capture_end_time = new_end_time
-                        # Wątek już działa, nie uruchamiamy nowego, tylko aktualizujemy czas końca
-                        # Pętla photo_capture_loop musi być świadoma global_capture_end_time lub duration musi być dynamiczne
-                        # Dla uproszczenia: jeśli kamera jest już ON, to żądanie może tylko przedłużyć czas działania
-                        # obecnej pętli, jeśli pętla jest zaprojektowana do sprawdzania global_capture_end_time.
-                        # Obecna pętla działa na podstawie duration_seconds przekazanego przy starcie.
-                        # Zatem, jeśli jest już ON, zwracamy informację, że jest aktywna.
-                        # Użytkownik musiałby ją wyłączyć i włączyć z nowym czasem.
-                        # Lub serwer musiałby zatrzymać i uruchomić nowy wątek.
-                        # Na razie: jeśli aktywna, to jest aktywna.
-                        return jsonify({'status': 'info', 'message': f'Kamera jest już włączona. Pozostały czas ok. {int(global_capture_end_time - time.time()) if global_capture_end_time else "N/A"}s.'}), 200
-
-                current_cam_port = camera_port
-                if not current_cam_port:
-                    print("Skanowanie w poszukiwaniu kamery przed włączeniem...")
-                    current_cam_port = scan_usb_for_camera()
+            try:
+                duration = int(data.get('Time', '30')) # Domyślnie 30 sekund
+                interval = 2 # Stały interwał 2 sekundy między zdjęciami
                 
-                if current_cam_port is None:
-                    print("Nie znaleziono kamery. Nie można włączyć.")
-                    return jsonify({'status': 'error', 'message': 'Nie znaleziono kamery.'}), 500
-                
-                camera_port = current_cam_port
-
-                if global_cap and global_cap.isOpened():
-                    global_cap.release()
-                    global_cap = None
-
-                global_cap = open_camera_with_settings(camera_port) 
-                
-                if not global_cap or not global_cap.isOpened():
-                    print(f"Nie udało się otworzyć kamery na porcie {camera_port}.")
-                    global_cap = None 
-                    global_capture_end_time = None # Wyczyść, jeśli nie udało się otworzyć
-                    return jsonify({'status': 'error', 'message': f'Nie udało się otworzyć kamery na porcie {camera_port}.'}), 500
+                # Otwieranie kamery przeniesione tutaj, aby było wewnątrz locka i tylko gdy 'ON'
+                if global_cap is None: # Otwórz tylko jeśli nie jest już otwarta
+                    global_cap = open_camera_with_settings(camera_port)
+                    if global_cap is None:
+                        print(f"Nie udało się otworzyć kamery na porcie {camera_port} przy próbie włączenia.")
+                        return jsonify({'status': 'error', 'message': f'Nie udało się otworzyć kamery na porcie {camera_port}.'}), 500
                 
                 capture_active = True
-                global_capture_end_time = time.time() + duration_seconds # Ustaw czas zakończenia
+                global_capture_end_time = time.time() + duration
                 
-                if capture_thread and capture_thread.is_alive():
-                    print("Ostrzeżenie: Poprzedni wątek kamery wciąż aktywny. Próba jego zakończenia.")
-                    # To nie powinno się zdarzyć przy poprawnej logice OFF
-                    capture_thread.join(timeout=1) 
-
-                capture_thread = threading.Thread(target=photo_capture_loop, args=(global_cap, duration_seconds, interval_seconds))
-                capture_thread.daemon = True 
+                # Uruchomienie wątku przechwytywania
+                # Przekazujemy global_cap jako argument do wątku
+                capture_thread = threading.Thread(target=photo_capture_loop, args=(global_cap, duration, interval))
+                capture_thread.daemon = True # Wątek zakończy się, gdy główny program się zakończy
                 capture_thread.start()
-                print(f"Kamera włączona. Czas trwania: {duration_seconds}s, interwał: {interval_seconds}s. Koniec o: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(global_capture_end_time))}")
-                return jsonify({'status': 'success', 'message': f'Kamera włączona na {duration_seconds}s.'})
-
-            elif status_command == 'OFF':
-                if not capture_active and (not global_cap or not global_cap.isOpened()):
-                    global_capture_end_time = None # Upewnij się, że jest wyczyszczone
-                    return jsonify({'status': 'info', 'message': 'Kamera jest już wyłączona.'}), 200
-
-                capture_active = False 
-                global_capture_end_time = None # Wyczyść czas zakończenia
                 
-                if capture_thread and capture_thread.is_alive():
-                    print("Oczekiwanie na zakończenie wątku przechwytywania...")
-                    capture_thread.join(timeout=max(5, interval_seconds + 2)) 
-                    if capture_thread.is_alive():
-                        print("Wątek przechwytywania nie zakończył się w oczekiwanym czasie.")
-                
-                if global_cap and global_cap.isOpened():
-                    print("Zwalnianie zasobów kamery...")
+                print(f"Kamera włączona na {duration}s. Przechwytywanie w tle rozpoczęte.")
+                return jsonify({'status': 'success', 'message': f'Kamera włączona na {duration} sekund.'})
+            except ValueError:
+                return jsonify({'status': 'error', 'message': 'Nieprawidłowy format czasu.'}), 400
+            except Exception as e:
+                print(f"Błąd przy włączaniu kamery: {e}")
+                traceback.print_exc()
+                capture_active = False # Resetuj stan w razie błędu
+                if global_cap: # Zamknij kamerę, jeśli została otwarta
                     global_cap.release()
-                    global_cap = None 
-                    print("Zasoby kamery zwolnione.")
-                else:
-                    print("global_cap nie był aktywny lub już zwolniony.")
-                
-                # capture_active = False # Już ustawione wyżej
-                return jsonify({'status': 'success', 'message': 'Kamera wyłączona.'})
-            else:
-                return jsonify({'status': 'error', 'message': 'Nieznana komenda.'}), 400
+                    global_cap = None
+                return jsonify({'status': 'error', 'message': f'Wewnętrzny błąd serwera przy włączaniu kamery: {str(e)}'}), 500
 
-    except Exception as e:
-        print(f"Wyjątek w TurnCameraON: {e}")
-        traceback.print_exc() 
+        elif status == 'OFF':
+            if not capture_active:
+                print("Próba wyłączenia kamery, gdy nie jest aktywna.")
+                return jsonify({'status': 'info', 'message': 'Kamera jest już wyłączona.'})
 
-        with global_capture_active_lock: # Dodatkowa ochrona dla zmiennych globalnych
-            if global_cap and global_cap.isOpened(): 
+            capture_active = False # Sygnał dla pętli przechwytywania, aby się zakończyła
+            global_capture_end_time = time.time() # Ustaw czas końca na teraz
+            
+            # Nie czekamy na capture_thread.join() tutaj, aby endpoint szybko odpowiedział
+            # Pętla sama się zakończy i zwolni kamerę w photo_capture_loop
+            # Jeśli global_cap jest zarządzany centralnie, to photo_capture_loop powinno go zwolnić
+            # lub zasygnalizować potrzebę zwolnienia.
+            # W obecnej logice, photo_capture_loop nie zwalnia kamery, robi to TurnCameraON.
+            # To wymaga przemyślenia, jeśli chcemy, aby kamera była zwalniana po zakończeniu pętli.
+            # Na razie, zwalniamy ją tutaj, jeśli wątek nie jest już aktywny lub go nie ma.
+
+            if global_cap is not None:
+                print("Zwalnianie kamery po komendzie OFF...")
                 global_cap.release()
                 global_cap = None
-            capture_active = False 
-            global_capture_end_time = None # Wyczyść czas zakończenia przy błędzie
-        
-        return jsonify({'status': 'error', 'message': f'Wystąpił wewnętrzny błąd serwera: {str(e)}'}), 500
+            
+            # Czekanie na zakończenie wątku, jeśli nadal działa
+            if capture_thread and capture_thread.is_alive():
+                print("Oczekiwanie na zakończenie wątku przechwytywania...")
+                capture_thread.join(timeout=5.0) # Dajmy mu chwilę na zakończenie
+                if capture_thread.is_alive():
+                    print("Wątek przechwytywania nie zakończył się w oczekiwanym czasie.")
+                else:
+                    print("Wątek przechwytywania zakończony.")
+            capture_thread = None # Resetuj zmienną wątku
 
-# ... (reszta kodu, open_camera_with_settings, capture_image_from_camera) ...
-# Upewnij się, że te funkcje używają cv2.
+            print("Kamera wyłączona.")
+            return jsonify({'status': 'success', 'message': 'Kamera wyłączona.'})
+        else:
+            return jsonify({'status': 'error', 'message': 'Nieprawidłowy status. Użyj "ON" lub "OFF".'}), 400
+
 def open_camera_with_settings(port, width=1280, height=720, fps=30):
     """Otwiera kamerę z określonymi ustawieniami."""
     cap = None
     try:
-        if port is None:
-            print("Błąd: Port kamery nie może być None.")
-            return None
-            
-        resolved_port = port
-        if isinstance(port, str) and port.isdigit():            
-            resolved_port = int(port)
-        
-        print(f"Próba otwarcia kamery na porcie: {resolved_port} (typ: {type(resolved_port)}) z cv2.VideoCapture...")
-
+        # Dla Windows, użyj cv2.CAP_DSHOW dla lepszej kompatybilności i wydajności
         if platform.system() == "Windows":
-            cap = cv2.VideoCapture(resolved_port, cv2.CAP_DSHOW)
-            if not cap or not cap.isOpened():
-                print(f"Nie udało się otworzyć kamery na porcie {resolved_port} z CAP_DSHOW. Próba bez flagi...")
-                cap = cv2.VideoCapture(resolved_port) # Spróbuj bez CAP_DSHOW
-        else:             
-            cap = cv2.VideoCapture(resolved_port)
-            
-        if not cap or not cap.isOpened():
-            print(f"Nie udało się otworzyć kamery na porcie {resolved_port}.")
-            if cap: cap.release()
+            cap = cv2.VideoCapture(port, cv2.CAP_DSHOW)
+        else:
+            cap = cv2.VideoCapture(port)
+
+        if not cap.isOpened():
+            print(f"Nie można otworzyć kamery na porcie {port}.")
             return None
-            
-        print(f"Kamera na porcie {resolved_port} otwarta. Ustawianie parametrów: {width}x{height} @ {fps}fps")
+
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         cap.set(cv2.CAP_PROP_FPS, fps)
         
-        # Daj kamerze chwilę na ustabilizowanie się po ustawieniu parametrów
-        time.sleep(0.5) # Zwiększono czas dla stabilności
-        return cap # Zwróć obiekt kamery
+        # Weryfikacja ustawień (opcjonalne, ale dobre do debugowania)
+        actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        print(f"Kamera otwarta na porcie {port}. Ustawienia: {width}x{height} @ {fps} FPS.")
+        print(f"Rzeczywiste ustawienia: {actual_width}x{actual_height} @ {actual_fps} FPS.")
+        
+        # Jeśli rzeczywiste ustawienia są znacząco inne, można to zalogować lub obsłużyć
+        if actual_width == 0 or actual_height == 0: # Kamera może nie wspierać ustawiania parametrów
+            print(f"Ostrzeżenie: Kamera na porcie {port} może nie wspierać zmiany rozdzielczości/FPS lub zwróciła nieprawidłowe wartości.")
+
+
+        return cap
     except Exception as e:
-        print(f"Wyjątek podczas otwierania kamery lub ustawiania parametrów na porcie {port}: {e}")
+        print(f"Błąd podczas otwierania lub konfigurowania kamery na porcie {port}: {e}")
         traceback.print_exc()
-        if cap:
-           cap.release()
+        if cap is not None:
+            cap.release()
         return None
 
 def capture_image_from_camera(port, output_path, width=1280, height=720, fps=30):
@@ -422,31 +444,25 @@ def capture_image_from_camera(port, output_path, width=1280, height=720, fps=30)
     cap = None
     try:
         cap = open_camera_with_settings(port, width, height, fps)
-        if not cap or not cap.isOpened():
-            print(f"Nie udało się otworzyć kamery na porcie {port} do zrobienia zdjęcia.")
-            return False
-        
-        ret, frame = cap.read()
-        if not ret:
-            print(f"Nie udało się odczytać ramki z kamery na porcie {port}.")
-            return False
-        
-        # Upewnij się, że katalog CAMERA_FOLDER istnieje
-        if not os.path.exists(CAMERA_FOLDER):
-            os.makedirs(CAMERA_FOLDER)
-            print(f"Utworzono katalog na zdjęcia: {CAMERA_FOLDER}")
+        if cap is None: # open_camera_with_settings zwróci None jeśli nie uda się otworzyć
+            return False 
 
-        cv2.imwrite(output_path, frame)
-        print(f"Zdjęcie zapisane do {output_path}")
-        return True
+        ret, frame = cap.read()
+        if ret:
+            cv2.imwrite(output_path, frame)
+            print(f"Zdjęcie zapisane jako {output_path}")
+            return True
+        else:
+            print(f"Nie udało się przechwycić obrazu z kamery na porcie {port}.")
+            return False
     except Exception as e:
-        print(f"Wyjątek podczas robienia zdjęcia z kamery {port}: {e}")
+        print(f"Błąd podczas przechwytywania obrazu z kamery {port}: {e}")
         traceback.print_exc()
         return False
     finally:
-        if cap and cap.isOpened(): # Upewnij się, że zwalniasz tylko otwartą kamerę
+        if cap is not None:
             cap.release()
-            print(f"Kamera na porcie {port} zwolniona po zrobieniu zdjęcia.")
+            print(f"Kamera na porcie {port} została zwolniona.")
 
 if __name__ == '__main__':
     # ... (reszta kodu __main__ bez zmian, ale upewnij się, że używa zaktualizowanego scan_usb_for_camera)
@@ -454,14 +470,14 @@ if __name__ == '__main__':
     # camera_port jest już globalny, więc przypisanie tutaj go ustawi
     initial_port = scan_usb_for_camera()
     if initial_port is not None:
-        camera_port = initial_port # Ustaw globalny port kamery, jeśli znaleziono przy starcie
+        camera_port = initial_port # Ustaw globalny port kamery
         print(f"Znaleziono kamerę przy starcie na porcie: {camera_port}")
     else:
+        camera_port = None # Jawne ustawienie na None
         print("Nie znaleziono kamery przy starcie serwera.")
     
     if not os.path.exists(CAMERA_FOLDER):
         os.makedirs(CAMERA_FOLDER) # Utwórz folder, jeśli nie istnieje
-        print(f"Utworzono katalog na zdjęcia: {CAMERA_FOLDER}")
 
     print(f"Uruchamianie serwera Flask na http://0.0.0.0:8898 ...")
     app.run(debug=True, host='0.0.0.0', port=8898)

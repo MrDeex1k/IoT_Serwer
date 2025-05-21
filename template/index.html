@@ -18,6 +18,16 @@
         <div class="no-image" style="display: flex;">TUTAJ BĘDZIE WIZJA Z KAMERY (lub nie znaleziono jeszcze żadnego zdjęcia)</div>
         {% endif %}
     </div>
+
+    <div class="detection-info-container">
+        <p id="detection-info-text">
+            {% if detection_info %}
+                {{ detection_info }}
+            {% else %}
+                Oczekiwanie na analizę obrazu...
+            {% endif %}
+        </p>
+    </div>
     
     <div class="controls">
         <button onclick="manualRefreshImage()">Odśwież obraz (Ręcznie)</button>
