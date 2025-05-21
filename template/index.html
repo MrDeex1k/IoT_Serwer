@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoring Domu</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>Monitoring Domu</h1>
+    <div class="camera-container">
+        {% if image_exists %}
+        <img src="{{ url_for('get_image', filename='test.jpg') }}" alt="Obraz z kamery">
+        {% else %}
+        <div class="no-image">TUTAJ BĘDZIE WIZJA Z KAMERY</div>
+        {% endif %}
+    </div>
+</body>
+</html>

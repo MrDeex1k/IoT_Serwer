@@ -1,0 +1,44 @@
+body 
+{
+    font-family: Arial, sans-serif;
+    background-color: #808080;
+    text-align: center;
+    margin: 0;
+    padding: 20px;
+}
+
+h1 
+{
+    color: white;
+}
+
+.camera-container 
+{
+    max-width: 1300px;
+    margin: 20px auto;
+    padding: 10px;
+    background-color: #666;
+    border-radius: 5px;
+}
+
+img 
+{
+    width: 1280px;
+    height: 720px;
+    border: 2px solid #333;
+    object-fit: cover;
+}
+
+.no-image 
+{
+    width: 1280px;
+    height: 720px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #555;
+    color: white;
+    font-size: 18px;
+    border-radius: 5px;
+    margin: 0 auto;
+}
