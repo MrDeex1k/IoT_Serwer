@@ -5,15 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monitoring Domu</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
 </head>
 <body>
     <h1>Monitoring Domu</h1>
     <div class="camera-container">
-        {% if image_exists %}
-        <img src="{{ url_for('get_image', filename='test.jpg') }}" alt="Obraz z kamery">
+        {% if image_exists and image_filename %}
+        <img id="camera-image" src="{{ url_for('get_camera_image', filename=image_filename) }}" alt="Obraz z kamery: {{ image_filename }}" style="display: block;">
+        <div class="no-image" style="display: none;">TUTAJ BĘDZIE WIZJA Z KAMERY</div>
         {% else %}
-        <div class="no-image">TUTAJ BĘDZIE WIZJA Z KAMERY</div>
+        <img id="camera-image" src="" alt="Obraz z kamery" style="display: none;"> 
+        <div class="no-image" style="display: flex;">TUTAJ BĘDZIE WIZJA Z KAMERY (lub nie znaleziono jeszcze żadnego zdjęcia)</div>
         {% endif %}
+    </div>
+    
+    <div class="controls">
+        <button onclick="manualRefreshImage()">Odśwież obraz (Ręcznie)</button>
+        <label for="capture-time">Czas (s):</label>
+        <input type="number" id="capture-time" value="30" min="1">
+        <button id="toggle-camera-button" onclick="toggleCamera()">Włącz kamerę (Auto)</button>
+        <span id="status-info"></span>
     </div>
 </body>
 </html>
