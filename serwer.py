@@ -19,7 +19,7 @@ model = YOLO(MODEL_PATH)
 print(f"Model YOLO załadowany z: {MODEL_PATH}")
 
 camera_port = None
-global_cap = NotImplemented
+global_cap = None
 global_capture_end_time = None
 
 capture_active = False
