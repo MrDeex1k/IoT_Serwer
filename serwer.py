@@ -284,7 +284,7 @@ def capture_image_from_camera_instance(cap_instance, output_path):
         return False
 
 def photo_capture_loop(cap_instance, duration_seconds, interval_seconds):
-    global camera_port, capture_active, global_capture_active_lock 
+    global camera_port, capture_active, global_capture_active_lock, global_capture_end_time
     
     start_loop_time = time.time()
     next_capture_time = start_loop_time
@@ -328,7 +328,10 @@ def photo_capture_loop(cap_instance, duration_seconds, interval_seconds):
         if capture_active and not active_in_this_run:
              pass
         elif capture_active:
-            print("Ostrzeżenie: Pętla zakończona, ale capture_active wciąż True. Wymuszanie False.")
+            print("Pętla zakończona automatycznie (upłynął czas). Ustawiam capture_active na False.")
+            capture_active = False
+            global_capture_end_time = time.time()
+            # Tutaj nie zwalniamy kamery, to zrobi inny kod, gdy wykryje zmianę capture_active
 
 @app.route('/TurnCameraON', methods=['POST'])
 def turn_camera_on():

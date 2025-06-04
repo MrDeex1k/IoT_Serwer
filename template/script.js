@@ -84,7 +84,6 @@ function fetchLatestImage() {
         });
 }
 
-// Funkcja do ręcznego odświeżenia (przycisk)
 function manualRefreshImage() {
     // Zamiast /capture-image, teraz będziemy prosić o najnowszy dostępny obraz
     // Serwer w tle powinien robić zdjęcia, jeśli tryb auto jest włączony
@@ -102,9 +101,6 @@ function startAutoRefresh(durationSeconds, sendCommandToServer = true) {
     }
     
     autoRefreshActive = true;
-    // document.getElementById('status-info').textContent = `Automatyczne odświeżanie aktywne przez ${durationSeconds}s.`;
-    // document.getElementById('status-info').style.color = 'lime';
-    // document.getElementById('toggle-camera-button').textContent = 'Wyłącz kamerę (Auto)';
 
     if (sendCommandToServer) {
         fetch('/TurnCameraON', {
@@ -144,12 +140,12 @@ function startAutoRefresh(durationSeconds, sendCommandToServer = true) {
 }
 
 function stopAutoRefresh(userInitiated = true) {
+    // Zawsze zatrzymaj interwał niezależnie od tego, kto zainicjował zatrzymanie
     if (imageRefreshInterval) {
         clearInterval(imageRefreshInterval);
         imageRefreshInterval = null;
     }
     autoRefreshActive = false;
-    // document.getElementById('toggle-camera-button').textContent = 'Włącz kamerę (Auto)';
 
     if (userInitiated) {
         fetch('/TurnCameraON', {
@@ -161,7 +157,7 @@ function stopAutoRefresh(userInitiated = true) {
         .then(data => {
             if (data.status === 'success') {
                 console.log("Serwer potwierdził wyłączenie kamery.");
-                // Po potwierdzeniu wyłączenia, zaktualizuj UI
+                // Po potwierdzeniu wyłączenia, zaktualizuj UI jednokrotnie
                 fetchLatestImage(); // To powinno pokazać ostatnie zdjęcie i status "wyłączona"
             } else {
                 console.error("Serwer zwrócił błąd przy wyłączaniu kamery:", data.message);
@@ -169,7 +165,7 @@ function stopAutoRefresh(userInitiated = true) {
                 document.getElementById('status-info').style.color = 'red';
                 // Nie resetujemy autoRefreshActive, bo już jest false
             }
-             // Niezależnie od odpowiedzi serwera, przycisk powinien być "Włącz"
+            // Niezależnie od odpowiedzi serwera, przycisk powinien być "Włącz"
             document.getElementById('toggle-camera-button').textContent = 'Włącz kamerę (Auto)';
         })
         .catch(error => {
@@ -182,7 +178,7 @@ function stopAutoRefresh(userInitiated = true) {
         // Jeśli zatrzymane automatycznie (np. przez fetchLatestImage po informacji od serwera)
         console.log("Automatyczne odświeżanie zatrzymane (nie przez użytkownika).");
         document.getElementById('toggle-camera-button').textContent = 'Włącz kamerę (Auto)';
-        // fetchLatestImage(); // Odśwież stan, jeśli to konieczne (zwykle fetchLatestImage to zainicjował)
+        // fetchLatestImage jednokrotnie już zostało wywołane z fetchLatestImage
     }
 }
 
