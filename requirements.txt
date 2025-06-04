@@ -1,5 +1,0 @@
-flask
-opencv-python
-ultralytics
-python-dotenv
-psycopg2-binary
