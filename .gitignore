@@ -1,3 +1,4 @@
 *.pt
 /kamera/*
+__pycache__
 credentials.env

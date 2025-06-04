@@ -1,18 +1,32 @@
 from flask import Flask, render_template, send_from_directory, url_for, request, jsonify
-import os # Dodano import os
-import cv2 # Dodano import cv2
-import traceback # Dodano import traceback
-import glob # Dodano import glob
-import platform # Dodano import platform
-import time # Dodano import time
-import threading # Dodano import threading
-from ultralytics import YOLO # Dodano import YOLO
+import os
+import cv2
+import traceback
+import glob
+import platform
+import time
+import threading
+from ultralytics import YOLO
+from datetime import datetime
+from db_connector import get_db_connection, insert_detected_object, create_table_if_not_exists
 
 app = Flask(__name__, template_folder='template', static_folder='template')
 
+# Inicjalizacja połączenia z bazą danych
+db_conn = get_db_connection()
+if db_conn:
+    create_table_if_not_exists(db_conn)
+    print("Połączenie z bazą danych PostgreSQL ustanowione pomyślnie.")
+else:
+    print("OSTRZEŻENIE: Nie można połączyć się z bazą danych PostgreSQL. Detekcje nie będą zapisywane.")
+
+# Słownik do śledzenia obiektów wykrytych w bieżącej sesji kamery
+detected_objects_in_session = {}
+session_objects_lock = threading.Lock()
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 CAMERA_FOLDER = os.path.join(current_dir, "kamera")
-MODEL_PATH = os.path.join(current_dir, "yolo12s.pt") # Ścieżka do modelu YOLO
+MODEL_PATH = os.path.join(current_dir, "yolo12x.pt")
 
 # Załaduj model YOLO
 model = YOLO(MODEL_PATH)
@@ -116,6 +130,9 @@ def analyze_image_for_web(image_path):
         people_count = 0
         dogs_count = 0
         detection_details = []
+        
+        # Obiekty wykryte w bieżącej analizie
+        current_detections = []
 
         for result in results:
             boxes = result.boxes
@@ -126,9 +143,22 @@ def analyze_image_for_web(image_path):
                 if cls_id == 0:  # Osoba
                     people_count += 1
                     detection_details.append(f"Człowiek ({confidence*100:.0f}%)")
+                    current_detections.append(("Człowiek", confidence*100))
                 elif cls_id == 16:  # Pies
                     dogs_count += 1
                     detection_details.append(f"Pies ({confidence*100:.0f}%)")
+                    current_detections.append(("Pies", confidence*100))
+        
+        # Aktualizacja słownika obiektów wykrytych w sesji i zapis do bazy danych nowych obiektów
+        with session_objects_lock:
+            for obj_type, confidence in current_detections:
+                # Jeśli typ obiektu nie był jeszcze wykryty w tej sesji lub wykryto z wyższą pewnością
+                if obj_type not in detected_objects_in_session or confidence > detected_objects_in_session[obj_type]:
+                    detected_objects_in_session[obj_type] = confidence
+                    # Zapis do bazy danych tylko jeśli to nowy obiekt lub wykryto z wyższą pewnością
+                    if db_conn:
+                        insert_detected_object(obj_type, confidence, datetime.now(), db_conn)
+                        print(f"Zapisano do bazy danych: {obj_type} ({confidence}%)")
         
         if people_count == 0 and dogs_count == 0:
             return "Nie wykryto ludzi ani psów."
@@ -302,7 +332,7 @@ def photo_capture_loop(cap_instance, duration_seconds, interval_seconds):
 
 @app.route('/TurnCameraON', methods=['POST'])
 def turn_camera_on():
-    global camera_port, global_cap, capture_active, capture_thread, global_capture_end_time, global_capture_active_lock
+    global camera_port, global_cap, capture_active, capture_thread, global_capture_end_time, global_capture_active_lock, detected_objects_in_session
     data = request.get_json()
     status = data.get('Status')
     
@@ -325,6 +355,11 @@ def turn_camera_on():
             try:
                 duration = int(data.get('Time', '30')) 
                 interval = 3
+                
+                # Resetowanie słownika wykrytych obiektów na początku nowej sesji
+                with session_objects_lock:
+                    detected_objects_in_session.clear()
+                    print("Zresetowano listę wykrytych obiektów na początku nowej sesji")
                 
                 if global_cap is None: 
                     global_cap = open_camera_with_settings(camera_port)
@@ -373,6 +408,15 @@ def turn_camera_on():
                 else:
                     print("Wątek przechwytywania zakończony.")
             capture_thread = None 
+            
+            # Wyświetlenie podsumowania wykrytych obiektów w zakończonej sesji
+            with session_objects_lock:
+                if detected_objects_in_session:
+                    print("Podsumowanie wykrytych obiektów w sesji:")
+                    for obj_type, confidence in detected_objects_in_session.items():
+                        print(f"- {obj_type}: {confidence}%")
+                else:
+                    print("Nie wykryto żadnych obiektów w tej sesji")
 
             print("Kamera wyłączona.")
             return jsonify({'status': 'success', 'message': 'Kamera wyłączona.'})
@@ -453,4 +497,10 @@ if __name__ == '__main__':
         os.makedirs(CAMERA_FOLDER)
 
     print(f"Uruchamianie serwera Flask na http://0.0.0.0:8898 ...")
-    app.run(debug=True, host='0.0.0.0', port=8898)
+    try:
+        app.run(debug=True, host='0.0.0.0', port=8898)
+    finally:
+        # Zamknij połączenie z bazą danych przy zamykaniu serwera
+        if db_conn:
+            db_conn.close()
+            print("Połączenie z bazą danych zostało zamknięte.")
