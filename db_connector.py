@@ -108,7 +108,6 @@ def insert_detected_object(obiekt, procent, czas=None, conn=None):
         if should_close_conn and conn is not None:
             conn.close()
 
-# Przykład użycia
 if __name__ == "__main__":
     # Test połączenia i wstawiania danych
     conn = get_db_connection()

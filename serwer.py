@@ -120,6 +120,67 @@ def get_latest_photo_details():
     modification_time = os.path.getmtime(latest_photo_path)
     return os.path.basename(latest_photo_path), modification_time, latest_photo_path
 
+# Nowe funkcje dla analizy obrazu
+def process_detection_results(results):
+    """Przetwarza wyniki detekcji z modelu YOLO i zwraca statystyki oraz szczegóły."""
+    people_count = 0
+    dogs_count = 0
+    detection_details = []
+    current_detections = []
+
+    for result in results:
+        boxes = result.boxes
+        for box in boxes:
+            cls_id = int(box.cls[0])
+            confidence = float(box.conf[0])
+            
+            if cls_id == 0:  # Osoba
+                people_count += 1
+                detection_details.append(f"Człowiek ({confidence*100:.0f}%)")
+                current_detections.append(("Człowiek", confidence*100))
+            elif cls_id == 16:  # Pies
+                dogs_count += 1
+                detection_details.append(f"Pies ({confidence*100:.0f}%)")
+                current_detections.append(("Pies", confidence*100))
+    
+    return people_count, dogs_count, detection_details, current_detections
+
+def update_session_detections(current_detections):
+    """Aktualizuje tablicę obiektów wykrytych w sesji na podstawie bieżących detekcji."""
+    with session_objects_lock:
+        for obj_type, confidence in current_detections:
+            # Sprawdź, czy obiekt już istnieje w tablicy
+            found = False
+            for obj in detected_objects_in_session:
+                if obj['obiekt'] == obj_type:
+                    found = True
+                    # Aktualizuj tylko jeśli nowa pewność jest większa
+                    if confidence > obj['procent']:
+                        obj['procent'] = confidence
+                        obj['czas'] = datetime.now()
+                    break
+            
+            # Jeśli nie znaleziono obiektu w tablicy, dodaj nowy
+            if not found:
+                detected_objects_in_session.append({
+                    'obiekt': obj_type,
+                    'procent': confidence,
+                    'czas': datetime.now()
+                })
+                print(f"Dodano nowy obiekt do sesji: {obj_type} ({confidence}%)")
+
+def format_detection_summary(people_count, dogs_count, detection_details):
+    """Formatuje podsumowanie detekcji do wyświetlenia."""
+    if people_count == 0 and dogs_count == 0:
+        return "Nie wykryto ludzi ani psów."
+    else:
+        summary = []
+        if people_count > 0:
+            summary.append(f"Ludzie: {people_count}")
+        if dogs_count > 0:
+            summary.append(f"Psy: {dogs_count}")
+        return f"Wykryto: {', '.join(summary)}. Szczegóły: {'; '.join(detection_details)}"
+
 def analyze_image_for_web(image_path):
     """Analizuje obraz za pomocą YOLO i zwraca opis wykrytych obiektów."""
     if not image_path or not os.path.exists(image_path):
@@ -127,157 +188,52 @@ def analyze_image_for_web(image_path):
 
     try:
         results = model.predict(image_path, save=False, classes=[0, 16], verbose=False)
-        people_count = 0
-        dogs_count = 0
-        detection_details = []
-        
-        # Obiekty wykryte w bieżącej analizie
-        current_detections = []
-
-        for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                cls_id = int(box.cls[0])
-                confidence = float(box.conf[0])
-                
-                if cls_id == 0:  # Osoba
-                    people_count += 1
-                    detection_details.append(f"Człowiek ({confidence*100:.0f}%)")
-                    current_detections.append(("Człowiek", confidence*100))
-                elif cls_id == 16:  # Pies
-                    dogs_count += 1
-                    detection_details.append(f"Pies ({confidence*100:.0f}%)")
-                    current_detections.append(("Pies", confidence*100))
+        people_count, dogs_count, detection_details, current_detections = process_detection_results(results)
         
         # Aktualizacja tablicy obiektów wykrytych w sesji
-        with session_objects_lock:
-            for obj_type, confidence in current_detections:
-                # Sprawdź, czy obiekt już istnieje w tablicy
-                found = False
-                for obj in detected_objects_in_session:
-                    if obj['obiekt'] == obj_type:
-                        found = True
-                        # Aktualizuj tylko jeśli nowa pewność jest większa
-                        if confidence > obj['procent']:
-                            obj['procent'] = confidence
-                            obj['czas'] = datetime.now()
-                        break
-                
-                # Jeśli nie znaleziono obiektu w tablicy, dodaj nowy
-                if not found:
-                    detected_objects_in_session.append({
-                        'obiekt': obj_type,
-                        'procent': confidence,
-                        'czas': datetime.now()
-                    })
-                    print(f"Dodano nowy obiekt do sesji: {obj_type} ({confidence}%)")
+        update_session_detections(current_detections)
         
-        if people_count == 0 and dogs_count == 0:
-            return "Nie wykryto ludzi ani psów."
-        else:
-            summary = []
-            if people_count > 0:
-                summary.append(f"Ludzie: {people_count}")
-            if dogs_count > 0:
-                summary.append(f"Psy: {dogs_count}")
-            return f"Wykryto: {', '.join(summary)}. Szczegóły: {'; '.join(detection_details)}"
+        return format_detection_summary(people_count, dogs_count, detection_details)
 
     except Exception as e:
         print(f"Błąd podczas analizy obrazu {image_path}: {e}")
         traceback.print_exc()
         return "Błąd analizy obrazu."
 
-@app.route('/')
-def home():
+# Funkcje związane z kamerą
+def open_camera_with_settings(port, width=1280, height=720, fps=30):
+    """Otwiera kamerę z określonymi ustawieniami."""
+    cap = None
     try:
-        image_filename, _, image_path = get_latest_photo_details()
-        image_exists = image_filename is not None
-        detection_info = None
-        if image_exists and image_path:
-            detection_info = analyze_image_for_web(image_path)
-            
-        with global_capture_active_lock:
-            camera_active_status = capture_active
-            remaining_time_status = 0
-            if global_capture_end_time and camera_active_status:
-                remaining_time_status = max(0, int(global_capture_end_time - time.time()))
+        if platform.system() == "Windows":
+            cap = cv2.VideoCapture(port, cv2.CAP_DSHOW)
+        else:
+            cap = cv2.VideoCapture(port)
 
-        return render_template('index.html', 
-                               image_exists=image_exists, 
-                               image_filename=image_filename,
-                               detection_info=detection_info,
-                               camera_active=camera_active_status,
-                               remaining_time=remaining_time_status)
+        if not cap.isOpened():
+            print(f"Nie można otworzyć kamery na porcie {port}.")
+            return None
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, fps)
+        
+        actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        print(f"Kamera otwarta na porcie {port}. Ustawienia: {width}x{height} @ {fps} FPS.")
+        print(f"Rzeczywiste ustawienia: {actual_width}x{actual_height} @ {actual_fps} FPS.")
+
+        if actual_width == 0 or actual_height == 0:
+            print(f"Ostrzeżenie: Kamera na porcie {port} może nie wspierać zmiany rozdzielczości/FPS lub zwróciła nieprawidłowe wartości.")
+
+        return cap
     except Exception as e:
-        print(f"Błąd w home: {e}")
+        print(f"Błąd podczas otwierania lub konfigurowania kamery na porcie {port}: {e}")
         traceback.print_exc()
-        return render_template('index.html', 
-                               image_exists=False, 
-                               image_filename=None,
-                               detection_info="Błąd ładowania informacji.",
-                               camera_active=False,
-                               remaining_time=0)
-
-@app.route('/kamera/<path:filename>')
-def get_camera_image(filename):
-    try:
-        return send_from_directory(CAMERA_FOLDER, filename, as_attachment=False) # as_attachment=False
-    except Exception as e:
-        print(f"Błąd przy serwowaniu obrazu {filename}: {e}")
-        traceback.print_exc()
-        return "Błąd serwowania obrazu", 404 # Dodano kod błędu
-
-@app.route('/style.css')
-def css():
-    return send_from_directory('template', 'style.css')
-
-@app.route('/scan-camera', methods=['GET'])
-def scan_camera():
-    """Endpoint do ręcznego skanowania portów USB w poszukiwaniu kamer."""
-    global camera_port
-    print("Rozpoczęto skanowanie kamer przez endpoint /scan-camera...")
-    found_port = scan_usb_for_camera()
-    
-    if found_port is not None:
-        camera_port = found_port
-        return jsonify({'status': 'success', 'message': f'Znaleziono i ustawiono kamerę na porcie {camera_port}.', 'camera_port': camera_port})
-    else:
-        camera_port = None
-        return jsonify({'status': 'error', 'message': 'Nie znaleziono żadnej działającej kamery.'}), 404 
-
-@app.route('/get-latest-image-info', methods=['GET'])
-def get_latest_image_info():
-    image_filename, _, image_path = get_latest_photo_details()
-    detection_info = "Analiza nie przeprowadzona."
-
-    if image_filename and image_path:
-        image_url = url_for('get_camera_image', filename=image_filename, _external=True)
-        detection_info = analyze_image_for_web(image_path)
-        status_message = 'success'
-    elif image_filename:
-        image_url = url_for('get_camera_image', filename=image_filename, _external=True)
-        detection_info = "Brak ścieżki do analizy obrazu."
-        status_message = 'success_no_analysis'
-    else:
-        image_url = None
-        detection_info = "Brak zdjęć."
-        status_message = 'info'
-
-    with global_capture_active_lock:
-        camera_active_status = capture_active
-        remaining_time_status = 0
-        if global_capture_end_time and camera_active_status:
-            remaining_time_status = max(0, int(global_capture_end_time - time.time()))
-
-    return jsonify({
-        'status': status_message, 
-        'image_url': image_url, 
-        'image_filename': image_filename,
-        'detection_info': detection_info,
-        'camera_active': camera_active_status,
-        'remaining_time': remaining_time_status,
-        'message': "Brak zdjęć." if status_message == 'info' else ""
-    })
+        if cap is not None:
+            cap.release()
+        return None
 
 def capture_image_from_camera_instance(cap_instance, output_path):
     """Wykonuje zdjęcie z już otwartej instancji kamery."""
@@ -295,8 +251,66 @@ def capture_image_from_camera_instance(cap_instance, output_path):
         traceback.print_exc()
         return False
 
+def capture_image_from_camera(port, output_path, width=1280, height=720, fps=30):
+    """Wykonuje zdjęcie z kamery i zapisuje je do pliku. Zarządza otwarciem i zamknięciem kamery."""
+    cap = None
+    try:
+        cap = open_camera_with_settings(port, width, height, fps)
+        if cap is None:
+            return False 
+
+        ret, frame = cap.read()
+        if ret:
+            cv2.imwrite(output_path, frame)
+            print(f"Zdjęcie zapisane jako {output_path}")
+            return True
+        else:
+            print(f"Nie udało się przechwycić obrazu z kamery na porcie {port}.")
+            return False
+    except Exception as e:
+        print(f"Błąd podczas przechwytywania obrazu z kamery {port}: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        if cap is not None:
+            cap.release()
+            print(f"Kamera na porcie {port} została zwolniona.")
+
+# Funkcje dla zarządzania sesją i bazą danych
+def save_session_objects_to_db():
+    """Zapisuje wszystkie wykryte obiekty z bieżącej sesji do bazy danych."""
+    with session_objects_lock:
+        if detected_objects_in_session:
+            print("Zapisywanie wykrytych obiektów do bazy danych:")
+            for obj in detected_objects_in_session:
+                if db_conn:
+                    insert_detected_object(obj['obiekt'], obj['procent'], obj['czas'], db_conn)
+                    print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']})")
+                else:
+                    print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']}) - BRAK POŁĄCZENIA Z BAZĄ")
+            return True
+        else:
+            print("Nie wykryto żadnych obiektów w tej sesji")
+            return False
+
+def reset_session_objects():
+    """Resetuje listę wykrytych obiektów w sesji."""
+    with session_objects_lock:
+        global detected_objects_in_session
+        detected_objects_in_session = []
+        print("Zresetowano listę wykrytych obiektów na początku nowej sesji")
+
+def get_camera_status():
+    """Zwraca aktualny status kamery i pozostały czas."""
+    with global_capture_active_lock:
+        camera_active_status = capture_active
+        remaining_time_status = 0
+        if global_capture_end_time and camera_active_status:
+            remaining_time_status = max(0, int(global_capture_end_time - time.time()))
+    return camera_active_status, remaining_time_status
+
 def photo_capture_loop(cap_instance, duration_seconds, interval_seconds):
-    global camera_port, capture_active, global_capture_active_lock, global_capture_end_time, detected_objects_in_session, db_conn
+    global camera_port, capture_active, global_capture_active_lock, global_capture_end_time
     
     start_loop_time = time.time()
     next_capture_time = start_loop_time
@@ -342,25 +356,99 @@ def photo_capture_loop(cap_instance, duration_seconds, interval_seconds):
         elif capture_active:
             print("Pętla zakończona automatycznie (upłynął czas). Ustawiam capture_active na False.")
             # Zapisanie wszystkich wykrytych obiektów do bazy danych przy automatycznym zakończeniu
-            with session_objects_lock:
-                if detected_objects_in_session:
-                    print("Zapisywanie wykrytych obiektów do bazy danych po automatycznym zakończeniu sesji:")
-                    for obj in detected_objects_in_session:
-                        if db_conn:
-                            insert_detected_object(obj['obiekt'], obj['procent'], obj['czas'], db_conn)
-                            print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']})")
-                        else:
-                            print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']}) - BRAK POŁĄCZENIA Z BAZĄ")
-                else:
-                    print("Nie wykryto żadnych obiektów w tej sesji")
-                    
+            save_session_objects_to_db()
             capture_active = False
             global_capture_end_time = time.time()
             # Tutaj nie zwalniamy kamery, to zrobi inny kod, gdy wykryje zmianę capture_active
 
+# Trasy Flask
+@app.route('/')
+def home():
+    try:
+        image_filename, _, image_path = get_latest_photo_details()
+        image_exists = image_filename is not None
+        detection_info = None
+        if image_exists and image_path:
+            detection_info = analyze_image_for_web(image_path)
+            
+        camera_active_status, remaining_time_status = get_camera_status()
+
+        return render_template('index.html', 
+                               image_exists=image_exists, 
+                               image_filename=image_filename,
+                               detection_info=detection_info,
+                               camera_active=camera_active_status,
+                               remaining_time=remaining_time_status)
+    except Exception as e:
+        print(f"Błąd w home: {e}")
+        traceback.print_exc()
+        return render_template('index.html', 
+                               image_exists=False, 
+                               image_filename=None,
+                               detection_info="Błąd ładowania informacji.",
+                               camera_active=False,
+                               remaining_time=0)
+
+@app.route('/kamera/<path:filename>')
+def get_camera_image(filename):
+    try:
+        return send_from_directory(CAMERA_FOLDER, filename, as_attachment=False)
+    except Exception as e:
+        print(f"Błąd przy serwowaniu obrazu {filename}: {e}")
+        traceback.print_exc()
+        return "Błąd serwowania obrazu", 404
+
+@app.route('/style.css')
+def css():
+    return send_from_directory('template', 'style.css')
+
+@app.route('/scan-camera', methods=['GET'])
+def scan_camera():
+    """Endpoint do ręcznego skanowania portów USB w poszukiwaniu kamer."""
+    global camera_port
+    print("Rozpoczęto skanowanie kamer przez endpoint /scan-camera...")
+    found_port = scan_usb_for_camera()
+    
+    if found_port is not None:
+        camera_port = found_port
+        return jsonify({'status': 'success', 'message': f'Znaleziono i ustawiono kamerę na porcie {camera_port}.', 'camera_port': camera_port})
+    else:
+        camera_port = None
+        return jsonify({'status': 'error', 'message': 'Nie znaleziono żadnej działającej kamery.'}), 404 
+
+@app.route('/get-latest-image-info', methods=['GET'])
+def get_latest_image_info():
+    image_filename, _, image_path = get_latest_photo_details()
+    detection_info = "Analiza nie przeprowadzona."
+
+    if image_filename and image_path:
+        image_url = url_for('get_camera_image', filename=image_filename, _external=True)
+        detection_info = analyze_image_for_web(image_path)
+        status_message = 'success'
+    elif image_filename:
+        image_url = url_for('get_camera_image', filename=image_filename, _external=True)
+        detection_info = "Brak ścieżki do analizy obrazu."
+        status_message = 'success_no_analysis'
+    else:
+        image_url = None
+        detection_info = "Brak zdjęć."
+        status_message = 'info'
+
+    camera_active_status, remaining_time_status = get_camera_status()
+
+    return jsonify({
+        'status': status_message, 
+        'image_url': image_url, 
+        'image_filename': image_filename,
+        'detection_info': detection_info,
+        'camera_active': camera_active_status,
+        'remaining_time': remaining_time_status,
+        'message': "Brak zdjęć." if status_message == 'info' else ""
+    })
+
 @app.route('/TurnCameraON', methods=['POST'])
 def turn_camera_on():
-    global camera_port, global_cap, capture_active, capture_thread, global_capture_end_time, global_capture_active_lock, detected_objects_in_session
+    global camera_port, global_cap, capture_active, capture_thread, global_capture_end_time, global_capture_active_lock
     data = request.get_json()
     status = data.get('Status')
     
@@ -385,9 +473,7 @@ def turn_camera_on():
                 interval = 3
                 
                 # Resetowanie tablicy wykrytych obiektów na początku nowej sesji
-                with session_objects_lock:
-                    detected_objects_in_session = []
-                    print("Zresetowano listę wykrytych obiektów na początku nowej sesji")
+                reset_session_objects()
                 
                 if global_cap is None: 
                     global_cap = open_camera_with_settings(camera_port)
@@ -431,17 +517,7 @@ def turn_camera_on():
             
             # Zapisanie wszystkich wykrytych obiektów do bazy danych, tylko jeśli nie zakończyło się automatycznie
             if not auto_ended:
-                with session_objects_lock:
-                    if detected_objects_in_session:
-                        print("Zapisywanie wykrytych obiektów do bazy danych (ręczne wyłączenie):")
-                        for obj in detected_objects_in_session:
-                            if db_conn:
-                                insert_detected_object(obj['obiekt'], obj['procent'], obj['czas'], db_conn)
-                                print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']})")
-                            else:
-                                print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']}) - BRAK POŁĄCZENIA Z BAZĄ")
-                    else:
-                        print("Nie wykryto żadnych obiektów w tej sesji")
+                save_session_objects_to_db()
             else:
                 print("Pomijam zapis do bazy danych, gdyż sesja zakończyła się automatycznie (dane już zapisane)")
 
@@ -460,78 +536,22 @@ def turn_camera_on():
             capture_thread = None 
             
             # Wyświetlenie podsumowania wykrytych obiektów w zakończonej sesji
-            with session_objects_lock:
-                if detected_objects_in_session:
-                    print("Podsumowanie wykrytych obiektów w sesji:")
-                    for obj in detected_objects_in_session:
-                        print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']})")
-                else:
-                    print("Nie wykryto żadnych obiektów w tej sesji")
+            print_detection_summary()
 
             print("Kamera wyłączona.")
             return jsonify({'status': 'success', 'message': 'Kamera wyłączona.'})
         else:
             return jsonify({'status': 'error', 'message': 'Nieprawidłowy status. Użyj "ON" lub "OFF".'}), 400
 
-def open_camera_with_settings(port, width=1280, height=720, fps=30):
-    """Otwiera kamerę z określonymi ustawieniami."""
-    cap = None
-    try:
-        if platform.system() == "Windows":
-            cap = cv2.VideoCapture(port, cv2.CAP_DSHOW)
+def print_detection_summary():
+    """Wyświetla podsumowanie wykrytych obiektów w sesji."""
+    with session_objects_lock:
+        if detected_objects_in_session:
+            print("Podsumowanie wykrytych obiektów w sesji:")
+            for obj in detected_objects_in_session:
+                print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']})")
         else:
-            cap = cv2.VideoCapture(port)
-
-        if not cap.isOpened():
-            print(f"Nie można otworzyć kamery na porcie {port}.")
-            return None
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        cap.set(cv2.CAP_PROP_FPS, fps)
-        
-        actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-        actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        actual_fps = cap.get(cv2.CAP_PROP_FPS)
-        print(f"Kamera otwarta na porcie {port}. Ustawienia: {width}x{height} @ {fps} FPS.")
-        print(f"Rzeczywiste ustawienia: {actual_width}x{actual_height} @ {actual_fps} FPS.")
-
-        if actual_width == 0 or actual_height == 0:
-            print(f"Ostrzeżenie: Kamera na porcie {port} może nie wspierać zmiany rozdzielczości/FPS lub zwróciła nieprawidłowe wartości.")
-
-
-        return cap
-    except Exception as e:
-        print(f"Błąd podczas otwierania lub konfigurowania kamery na porcie {port}: {e}")
-        traceback.print_exc()
-        if cap is not None:
-            cap.release()
-        return None
-
-def capture_image_from_camera(port, output_path, width=1280, height=720, fps=30):
-    """Wykonuje zdjęcie z kamery i zapisuje je do pliku. Zarządza otwarciem i zamknięciem kamery."""
-    cap = None
-    try:
-        cap = open_camera_with_settings(port, width, height, fps)
-        if cap is None:
-            return False 
-
-        ret, frame = cap.read()
-        if ret:
-            cv2.imwrite(output_path, frame)
-            print(f"Zdjęcie zapisane jako {output_path}")
-            return True
-        else:
-            print(f"Nie udało się przechwycić obrazu z kamery na porcie {port}.")
-            return False
-    except Exception as e:
-        print(f"Błąd podczas przechwytywania obrazu z kamery {port}: {e}")
-        traceback.print_exc()
-        return False
-    finally:
-        if cap is not None:
-            cap.release()
-            print(f"Kamera na porcie {port} została zwolniona.")
+            print("Nie wykryto żadnych obiektów w tej sesji")
 
 if __name__ == '__main__':
     print("Uruchamianie serwera, inicjalne skanowanie w poszukiwaniu kamery...")
