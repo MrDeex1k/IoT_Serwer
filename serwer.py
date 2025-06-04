@@ -1,13 +1,13 @@
-from flask import Flask, render_template, send_from_directory, url_for, request, jsonify
 import os
 import cv2
-import traceback
 import glob
-import platform
 import time
+import platform
 import threading
+import traceback
 from ultralytics import YOLO
 from datetime import datetime
+from flask import Flask, render_template, send_from_directory, url_for, request, jsonify
 from db_connector import get_db_connection, insert_detected_object, create_table_if_not_exists
 
 app = Flask(__name__, template_folder='template', static_folder='template')
