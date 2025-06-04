@@ -20,8 +20,8 @@ if db_conn:
 else:
     print("OSTRZEŻENIE: Nie można połączyć się z bazą danych PostgreSQL. Detekcje nie będą zapisywane.")
 
-# Słownik do śledzenia obiektów wykrytych w bieżącej sesji kamery
-detected_objects_in_session = {}
+# Tablica do śledzenia obiektów wykrytych w bieżącej sesji kamery
+detected_objects_in_session = []
 session_objects_lock = threading.Lock()
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -149,16 +149,28 @@ def analyze_image_for_web(image_path):
                     detection_details.append(f"Pies ({confidence*100:.0f}%)")
                     current_detections.append(("Pies", confidence*100))
         
-        # Aktualizacja słownika obiektów wykrytych w sesji i zapis do bazy danych nowych obiektów
+        # Aktualizacja tablicy obiektów wykrytych w sesji
         with session_objects_lock:
             for obj_type, confidence in current_detections:
-                # Jeśli typ obiektu nie był jeszcze wykryty w tej sesji lub wykryto z wyższą pewnością
-                if obj_type not in detected_objects_in_session or confidence > detected_objects_in_session[obj_type]:
-                    detected_objects_in_session[obj_type] = confidence
-                    # Zapis do bazy danych tylko jeśli to nowy obiekt lub wykryto z wyższą pewnością
-                    if db_conn:
-                        insert_detected_object(obj_type, confidence, datetime.now(), db_conn)
-                        print(f"Zapisano do bazy danych: {obj_type} ({confidence}%)")
+                # Sprawdź, czy obiekt już istnieje w tablicy
+                found = False
+                for obj in detected_objects_in_session:
+                    if obj['obiekt'] == obj_type:
+                        found = True
+                        # Aktualizuj tylko jeśli nowa pewność jest większa
+                        if confidence > obj['procent']:
+                            obj['procent'] = confidence
+                            obj['czas'] = datetime.now()
+                        break
+                
+                # Jeśli nie znaleziono obiektu w tablicy, dodaj nowy
+                if not found:
+                    detected_objects_in_session.append({
+                        'obiekt': obj_type,
+                        'procent': confidence,
+                        'czas': datetime.now()
+                    })
+                    print(f"Dodano nowy obiekt do sesji: {obj_type} ({confidence}%)")
         
         if people_count == 0 and dogs_count == 0:
             return "Nie wykryto ludzi ani psów."
@@ -284,7 +296,7 @@ def capture_image_from_camera_instance(cap_instance, output_path):
         return False
 
 def photo_capture_loop(cap_instance, duration_seconds, interval_seconds):
-    global camera_port, capture_active, global_capture_active_lock, global_capture_end_time
+    global camera_port, capture_active, global_capture_active_lock, global_capture_end_time, detected_objects_in_session, db_conn
     
     start_loop_time = time.time()
     next_capture_time = start_loop_time
@@ -329,6 +341,19 @@ def photo_capture_loop(cap_instance, duration_seconds, interval_seconds):
              pass
         elif capture_active:
             print("Pętla zakończona automatycznie (upłynął czas). Ustawiam capture_active na False.")
+            # Zapisanie wszystkich wykrytych obiektów do bazy danych przy automatycznym zakończeniu
+            with session_objects_lock:
+                if detected_objects_in_session:
+                    print("Zapisywanie wykrytych obiektów do bazy danych po automatycznym zakończeniu sesji:")
+                    for obj in detected_objects_in_session:
+                        if db_conn:
+                            insert_detected_object(obj['obiekt'], obj['procent'], obj['czas'], db_conn)
+                            print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']})")
+                        else:
+                            print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']}) - BRAK POŁĄCZENIA Z BAZĄ")
+                else:
+                    print("Nie wykryto żadnych obiektów w tej sesji")
+                    
             capture_active = False
             global_capture_end_time = time.time()
             # Tutaj nie zwalniamy kamery, to zrobi inny kod, gdy wykryje zmianę capture_active
@@ -359,9 +384,9 @@ def turn_camera_on():
                 duration = int(data.get('Time', '30')) 
                 interval = 3
                 
-                # Resetowanie słownika wykrytych obiektów na początku nowej sesji
+                # Resetowanie tablicy wykrytych obiektów na początku nowej sesji
                 with session_objects_lock:
-                    detected_objects_in_session.clear()
+                    detected_objects_in_session = []
                     print("Zresetowano listę wykrytych obiektów na początku nowej sesji")
                 
                 if global_cap is None: 
@@ -398,6 +423,28 @@ def turn_camera_on():
             capture_active = False
             global_capture_end_time = time.time()
 
+            # Sprawdzamy, czy mamy już zapisane dane w bazie (mogło to nastąpić przy automatycznym zakończeniu)
+            auto_ended = False
+            if capture_thread and not capture_thread.is_alive():
+                print("Wykryto, że wątek kamery już się zakończył (prawdopodobnie upłynął czas).")
+                auto_ended = True
+            
+            # Zapisanie wszystkich wykrytych obiektów do bazy danych, tylko jeśli nie zakończyło się automatycznie
+            if not auto_ended:
+                with session_objects_lock:
+                    if detected_objects_in_session:
+                        print("Zapisywanie wykrytych obiektów do bazy danych (ręczne wyłączenie):")
+                        for obj in detected_objects_in_session:
+                            if db_conn:
+                                insert_detected_object(obj['obiekt'], obj['procent'], obj['czas'], db_conn)
+                                print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']})")
+                            else:
+                                print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']}) - BRAK POŁĄCZENIA Z BAZĄ")
+                    else:
+                        print("Nie wykryto żadnych obiektów w tej sesji")
+            else:
+                print("Pomijam zapis do bazy danych, gdyż sesja zakończyła się automatycznie (dane już zapisane)")
+
             if global_cap is not None:
                 print("Zwalnianie kamery po komendzie OFF...")
                 global_cap.release()
@@ -416,8 +463,8 @@ def turn_camera_on():
             with session_objects_lock:
                 if detected_objects_in_session:
                     print("Podsumowanie wykrytych obiektów w sesji:")
-                    for obj_type, confidence in detected_objects_in_session.items():
-                        print(f"- {obj_type}: {confidence}%")
+                    for obj in detected_objects_in_session:
+                        print(f"- {obj['obiekt']}: {obj['procent']}% (czas: {obj['czas']})")
                 else:
                     print("Nie wykryto żadnych obiektów w tej sesji")
 
