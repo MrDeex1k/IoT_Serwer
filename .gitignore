@@ -1,2 +1,3 @@
 *.pt
 /kamera/*
+credentials.env
